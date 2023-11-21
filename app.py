@@ -5,7 +5,6 @@ from faker import Faker
 import re
 import uuid
 
-
 app = Flask(__name__)
 authorizations = {
     'Bearer Auth': {
@@ -16,8 +15,14 @@ authorizations = {
 }
 
 api = Api(app, version='1.0', title='Library API', description='A simple Library API', authorizations=authorizations, security='Bearer Auth')
-
 DATABASE = 'library.db'
+
+# Define user permissions
+user_permissions = {
+    "admin":      {"read": True, "write": True, "guest_view": True},
+    "user":       {"read": True, "write": False, "guest_view": True},
+    "guest":      {"read": False, "write": False, "guest_view": True}
+}
 
 def verify_token(token):
     if re.match(r'^adm-[0-9a-fA-F-]+$', token):
@@ -36,7 +41,6 @@ def get_auth_token():
 
     return auth_header.split(None, 1)[1].strip()
 
-
 def require_auth():
     token = get_auth_token()
     user_type = verify_token(token)
@@ -44,8 +48,7 @@ def require_auth():
         abort(403)  # Forbidden access
     return user_type
 
-def generate_token(email,user_type):
-    
+def generate_token(email, user_type):
     base_token = str(uuid.uuid4())
     if user_type == 'admin':
         return 'adm-' + base_token
@@ -53,6 +56,9 @@ def generate_token(email,user_type):
         return 'usr-' + base_token
     else:
         return 'oth-' + base_token
+
+def check_permission(user_type, permission):
+    return user_permissions.get(user_type, {}).get(permission, False)
 
 def get_db():
     db = getattr(g, '_database', None)
@@ -94,9 +100,6 @@ book_model = api.model('Book', {
     'author': fields.String(required=True, description='The book author')
 })
 
-
-
-
 @ns.route('/generate_token')
 class TokenGenerator(Resource):
     token_model = api.model('TokenGeneration', {
@@ -109,13 +112,9 @@ class TokenGenerator(Resource):
         data = request.json
         token = generate_token(data['email'], data['user_type'])
         return {'token': token}
-    
-
-
 
 @ns.route('/books')
 class BookList(Resource):
-    
     @ns.doc('list_books', security='Bearer Auth')
     def get(self):
         user_type = require_auth()
@@ -126,14 +125,13 @@ class BookList(Resource):
     @ns.doc('create_book', security='Bearer Auth')
     def post(self):
         user_type = require_auth()
+        if not check_permission(user_type, 'write'):
+            abort(403, "User does not have write permission")
         db = get_db()
         data = request.json
         db.execute('INSERT INTO books (title, author) VALUES (?, ?)', (data['title'], data['author']))
         db.commit()
         return {'message': 'Book added'}, 201
-
-
-
 
 @ns.route('/book/<int:book_id>')
 @ns.param('book_id', 'The book identifier')
@@ -141,6 +139,8 @@ class Book(Resource):
     @ns.doc('get_book', security='Bearer Auth')
     def get(self, book_id):
         user_type = require_auth()
+        if not check_permission(user_type, 'read'):
+            abort(403, "User does not have read permission")
         book = query_db('SELECT * FROM books WHERE id = ?', [book_id], one=True)
         if book is None:
             api.abort(404, "Book {} doesn't exist".format(book_id))
@@ -150,6 +150,8 @@ class Book(Resource):
     @ns.doc('update_book', security='Bearer Auth')
     def put(self, book_id):
         user_type = require_auth()
+        if not check_permission(user_type, 'write'):
+            abort(403, "User does not have write permission")
         db = get_db()
         data = request.json
         db.execute('UPDATE books SET title = ?, author = ? WHERE id = ?', (data['title'], data['author'], book_id))
@@ -159,13 +161,13 @@ class Book(Resource):
     @ns.doc('delete_book', security='Bearer Auth')
     def delete(self, book_id):
         user_type = require_auth()
+        if not check_permission(user_type, 'write'):
+            abort(403, "User does not have write permission")
         db = get_db()
         db.execute('DELETE FROM books WHERE id = ?', (book_id,))
         db.commit()
         return {'message': 'Book deleted'}
 
-
-    
 if __name__ == '__main__':
     init_db()
     app.run(debug=True)
